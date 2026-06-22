@@ -3,8 +3,7 @@ package ccd.experiments.regularisation;
 import beast.base.evolution.tree.Node;
 import beast.base.evolution.tree.Tree;
 import ccd.algorithms.LoadOrStoreTrees;
-import ccd.model.AbstractCCD;
-import ccd.model.HeightSettingStrategy;
+import ccd.model.GRegZApprox;
 import ccd.model.KRegCCD;
 import ccd.model.bitsets.BitSet;
 
@@ -15,26 +14,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Run GRegCCD on the RSV2 posterior: held-out log-probability of the one-parameter
- * "per-new-split" model, alongside KRegCCD. The exact partition function Z = sum_T weight(T)
- * (weight(T) = product over splits of count-or-eps) is #P-hard at n=129, so we estimate it by
- * importance sampling from a fitted KRegCCD (full support, samplable, close to GRegCCD):
- *   Z(eps) = E_{T~KReg}[ weight(T;eps) / P_KReg(T) ],
- * using the sampler's stamped exact log-probability as the proposal density and reusing the same
- * samples across the eps grid (only weight(T;eps) depends on eps).
+ * Run GRegCCD on the RSV2 posterior: held-out log-probability of the one-parameter "per-new-split"
+ * model, alongside the two-parameter KRegCCD (both full support). For a tree,
+ * logweight(T;eps) = sumLogCount(T) + novel(T)*log(eps), where sumLogCount sums log of the observed
+ * split counts and novel counts the splits never seen in training; held-out
+ * mean logP = mean_test[logweight(T;eps)] - logZ(eps), over an eps grid.
  *
- * For a tree, logweight(T;eps) = sumLogCount(T) + novel(T)*log(eps), where sumLogCount sums log of
- * the observed split counts and novel counts the splits never seen in training. Held-out
- * mean logP = mean_test[logweight(T;eps)] - logZ(eps).
- *
- * <p>RESULT (RSV2, 1000/1000, 20k samples): this naive IS estimator FAILS -- effective sample size
- * ~3 / 20000. GRegCCD's count-weighting (observed counts up to ~1000) gives weight(T) an enormous
- * dynamic range, and KRegCCD is too different a proposal, so a handful of near-MAP samples carry all
- * the weight; logZ is then untrustworthy and barely depends on eps. An accurate large-n Z needs
- * either an eps-expansion around the exact observed-core partition function (CCD sum-product over
- * observed clades, deterministic) or annealed importance sampling bridging CCD1 -> GRegCCD; both are
- * substantial. Kept as the infrastructure (observed-split extraction, per-tree stats, eps grid) and
- * a record of why the cheap estimator is insufficient.
+ * <p>The exact partition function Z = sum_T weight(T) is #P-hard at n=129. Naive importance
+ * sampling from KRegCCD fails (effective sample size ~3/20000: GRegCCD's count-weighting gives
+ * weight(T) an enormous dynamic range). Instead Z is computed by the deterministic observed-clade-DAG
+ * approximation {@link GRegZApprox} (fresh remainders priced by g(m), recombinations into two
+ * observed clades kept exact), whose error is O(eps^2)-per-clade and so very small at the operating
+ * eps.
  */
 public class GRegCCDRSV2 {
 
@@ -59,50 +50,35 @@ public class GRegCCDRSV2 {
         System.out.printf("observed clades=%d, observed splits=%d%n",
                 obs.size(), obs.values().stream().mapToInt(Map::size).sum());
 
-        // KRegCCD: comparison model + importance-sampling proposal
+        // KRegCCD: comparison model (both are full support)
         KRegCCD kreg = KRegCCD.withOptimisedParameters(train);
-
-        // pre-compute per-test-tree (novel, sumLogCount)
-        double[] testNovel = new double[test.size()], testSLC = new double[test.size()];
-        for (int i = 0; i < test.size(); i++) { double[] s = stats(test.get(i)); testNovel[i] = s[0]; testSLC[i] = s[1]; }
         double kregMeanLogP = 0;
         for (Tree t : test) kregMeanLogP += kreg.getLogProbabilityOfTree(t);
         kregMeanLogP /= test.size();
 
-        // importance samples from KRegCCD: store (novel, sumLogCount, logQ)
-        System.out.printf("drawing %d importance samples from KRegCCD ...%n", nIS);
-        double[] isNovel = new double[nIS], isSLC = new double[nIS], isLogQ = new double[nIS];
-        for (int s = 0; s < nIS; s++) {
-            Tree t = kreg.sampleTree(HeightSettingStrategy.None);
-            double[] st = stats(t);
-            isNovel[s] = st[0]; isSLC[s] = st[1];
-            isLogQ[s] = (Double) t.getRoot().getMetaData(AbstractCCD.LOG_PROB_SUBTREE_KEY);
-        }
+        // pre-compute per-test-tree (novel, sumLogCount)
+        double[] testNovel = new double[test.size()], testSLC = new double[test.size()];
+        for (int i = 0; i < test.size(); i++) { double[] s = stats(test.get(i)); testNovel[i] = s[0]; testSLC[i] = s[1]; }
 
-        System.out.printf("%n%-9s %14s %12s %8s %14s%n", "eps", "GReg logP/tree", "logZ", "ESS", "(KReg logP/tree)");
+        // GRegCCD partition function via the tractable observed-DAG approximation
+        GRegZApprox z = GRegZApprox.fromTrees(train);
+
+        System.out.printf("%n%-9s %14s %12s %14s%n", "eps", "GReg logP/tree", "logZ", "(KReg logP/tree)");
         double bestEps = 0, bestLogP = Double.NEGATIVE_INFINITY;
-        int grid = 25;
-        double lo = 1e-4, hi = 0.05;
+        int grid = 30;
+        double lo = 1e-4, hi = 0.5;
         for (int g = 0; g < grid; g++) {
             double eps = lo * Math.pow(hi / lo, g / (double) (grid - 1));
             double logEps = Math.log(eps);
-            // logZ via log-sum-exp of logweight - logQ
-            double[] lr = new double[nIS];
-            double max = Double.NEGATIVE_INFINITY;
-            for (int s = 0; s < nIS; s++) { lr[s] = isSLC[s] + isNovel[s] * logEps - isLogQ[s]; if (lr[s] > max) max = lr[s]; }
-            double sum = 0, sum2 = 0;
-            for (int s = 0; s < nIS; s++) { double w = Math.exp(lr[s] - max); sum += w; sum2 += w * w; }
-            double logZ = max + Math.log(sum) - Math.log(nIS);
-            double ess = sum * sum / sum2; // effective sample size
-
+            double logZ = z.logZ(eps);
             double meanLogP = 0;
             for (int i = 0; i < test.size(); i++) meanLogP += testSLC[i] + testNovel[i] * logEps;
             meanLogP = meanLogP / test.size() - logZ;
             if (meanLogP > bestLogP) { bestLogP = meanLogP; bestEps = eps; }
-            System.out.printf("%-9.5f %14.3f %12.3f %8.0f %14.3f%n", eps, meanLogP, logZ, ess, kregMeanLogP);
+            System.out.printf("%-9.5f %14.3f %12.3f %14.3f%n", eps, meanLogP, logZ, kregMeanLogP);
         }
-        System.out.printf("%nGRegCCD best held-out logP/tree = %.3f at eps = %.5f%n", bestLogP, bestEps);
-        System.out.printf("KRegCCD   held-out logP/tree = %.3f%n", kregMeanLogP);
+        System.out.printf("%nGRegCCD best held-out logP/tree = %.3f at eps = %.5f (1 parameter)%n", bestLogP, bestEps);
+        System.out.printf("KRegCCD   held-out logP/tree = %.3f (2 parameters, CV-fitted)%n", kregMeanLogP);
     }
 
     /** (novel split count, sum of log observed-split counts) for a tree. */
