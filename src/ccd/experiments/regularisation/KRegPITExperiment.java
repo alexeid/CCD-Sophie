@@ -151,8 +151,16 @@ public class KRegPITExperiment {
                 return new RegCCD(trainingTrees, 0, KRegCCD.DEFAULT_ALPHA);
             case "kreg":
                 return KRegCCD.withOptimisedParameters(trainingTrees);
+            case "mreg": {
+                // one-parameter per-new-split model; tail OFF so the (self-consistent) sampler used by
+                // the PIT and the scorer are the same distribution (see MRegCCD sampling).
+                double mu = ccd.algorithms.regularisation.MRegCCDParameterOptimiser
+                        .optimiseMu(trainingTrees).mu();
+                return new ccd.model.MRegCCD(trainingTrees, 0.0, mu,
+                        ccd.model.MRegCCD.DEFAULT_RESERVE_DEPTH, false);
+            }
             default:
-                throw new IllegalArgumentException("Unknown ccdType '" + ccdType + "' (expected kreg, regccd, ccd1 or ccd0)");
+                throw new IllegalArgumentException("Unknown ccdType '" + ccdType + "' (expected kreg, mreg, regccd, ccd1 or ccd0)");
         }
     }
 

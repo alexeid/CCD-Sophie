@@ -70,9 +70,17 @@ Currently lives as static methods in `src/ccd/experiments/regularisation/GRegCCD
    wraps it. RSV2 fair result (CV-fit mu on train, no peeking, score independent test): MRegCCD 1-param
    CV-fit mu=0.0159 -> **-58.09**; KRegCCD 2-param -> -56.36; gap **1.73 nat**. CV mu == peeked-best mu,
    so the held-out grid wasn't overfitting.
-4. **Try alpha smoothing** on the observed CCPs (optional 2nd knob) to see if it helps the novel
-   trees without hurting common -- but the point was ONE parameter, so keep this a sanity check.
-5. **PIT calibration** of the 1-mu model (add to `KRegPITExperiment` as a 4th model).
+4. ~~**Try alpha smoothing**~~ **REJECTED (2026-06-22, Alexei): MRegCCD is a ONE-parameter model by
+   design; do not add an alpha knob.** (The 1.73-nat gap to 2-param KRegCCD is the cost of that
+   choice -- the m=2 recombination pricing -- and that is acceptable / the point.)
+5. ~~**PIT calibration**~~ **DONE**: `MRegCCD.sampleTreeLogProbability()` is a self-consistent
+   simulator (escapes at rate mu, regions m<=depth, no tail) that draws without building a Tree; its
+   draw distribution equals the scorer when the model is built tail-OFF (which the PIT does).
+   `MRegCCDTest.samplerMatchesScorer` verifies E_q[-log q]=H by enumeration. `mreg` added to
+   `KRegPITExperiment.buildModel` (CV-fit mu, tail off), so the sweep supports it. Yule50 rep1 n=1000:
+   mreg L1=0.17 (0% excluded, full support); kreg 0.136 (0%); ccd1 0.116 but 23.5% excluded. mreg is
+   full-support like KRegCCD and slightly less calibrated (1 vs 2 params) -- consistent with held-out.
+   Pooled multi-rep sweep is the next run (now with `mreg` in the model list).
 
 ## Other artifacts from this session (all committed)
 

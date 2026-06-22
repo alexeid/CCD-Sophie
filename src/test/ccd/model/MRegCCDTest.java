@@ -141,6 +141,45 @@ public class MRegCCDTest {
     }
 
     @Test
+    public void samplerMatchesScorer() {
+        // E_q[-log q(S)] = H(q): if the simulator draws from q AND reports the correct log q, the mean
+        // sampled -logp equals the entropy computed by enumeration with the scorer. Use the tail-OFF
+        // model so the self-consistent sampler and the scorer are the same distribution.
+        List<String> taxa = Arrays.asList("A", "B", "C", "D", "E", "F");
+        List<T> all = allTopologies(taxa);
+        List<T> picks = new ArrayList<>();
+        for (int i = 0; i < all.size(); i += 31) picks.add(all.get(i));
+        List<Tree> train = trees(taxa, picks);
+        MRegCCD m = new MRegCCD(train, 0.0, 0.1, taxa.size(), false); // full depth, tail off
+
+        // true entropy and normalisation by enumeration (scorer)
+        double sum = 0.0, H = 0.0;
+        for (T t : all) {
+            Tree tree = new TreeParser(taxa, topo(t) + ";", 1, false);
+            double logq = m.getLogProbabilityOfTree(tree);
+            double q = Math.exp(logq);
+            sum += q;
+            H -= q * logq;
+        }
+        assertEquals(1.0, sum, 1e-9, "tail-off full-depth model must be normalised");
+
+        // Monte-Carlo entropy from the sampler
+        int N = 300_000;
+        double s1 = 0.0, s2 = 0.0;
+        for (int i = 0; i < N; i++) {
+            double logp = m.sampleTreeLogProbability();
+            s1 += -logp;
+            s2 += logp * logp;
+        }
+        double hHat = s1 / N;
+        double se = Math.sqrt(Math.max(0, s2 / N - hHat * hHat) / N);
+        System.out.printf("MRegCCD sampler: H_enum=%.5f  H_MC=%.5f +/- %.5f (%.1f SE off)%n",
+                H, hHat, se, Math.abs(hHat - H) / se);
+        assertEquals(H, hHat, Math.max(5 * se, 0.01),
+                "sampler entropy must match the scorer's enumerated entropy");
+    }
+
+    @Test
     public void truncatedReserveSuperNormalises() {
         List<String> taxa = Arrays.asList("A", "B", "C", "D", "E", "F");
         List<Tree> train = trees(taxa,

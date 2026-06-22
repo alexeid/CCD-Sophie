@@ -487,12 +487,160 @@ public class MRegCCD extends CCD1 {
     }
 
     /* ----------------------------------------------------------------------
-     * Sampling -- needed by ITreeDistribution (PIT). Implemented in a later step.
+     * Sampling (self-consistent)
+     *
+     * The PIT calibration test draws trees from the model and needs only each draw's log-probability
+     * (not the tree object), so we override sampleTreeLogProbability() with a direct simulation of the
+     * generative process and never materialise a Tree. At each reservable clade we escape with
+     * probability equal to its escape mass (= mu by the eps-solve, tail EXCLUDED) and otherwise take
+     * an observed (red) split ~ CCP; an escape draws a region order m proportional to M_m eps^(m-1), a
+     * boundary of m observed subclades proportional to its all-novel pathcount, and recurses into the
+     * boundary parts. The resolution shape within a region is not drawn -- every shape has the same
+     * weight eps^(m-1) and does not change the draw's log-probability -- so the simulation is cheap.
+     *
+     * The draw distribution exactly matches getLogProbabilityOfTree when the model is built with the
+     * tail OFF (then the red discount is 1 - mu, matching the escape mass), for trees whose regions are
+     * within reserveDepth; deeper regions (mass ~mu^reserveDepth) are never produced, the same
+     * self-consistent / full-support trade-off KRegCCD makes for its PIT.
      * ------------------------------------------------------------------- */
+
+    @Override
+    public double sampleTreeLogProbability() {
+        return simulate(getRootClade());
+    }
+
+    private double simulate(Clade c) {
+        if (c.isLeaf()) {
+            return 0.0;
+        }
+        BitSet cb = c.getCladeInBits();
+        if (reservable(cb)) {
+            double eps = epsFor(cb, mu);
+            int[] n = countsFor(cb);
+            double escapeMass = 0.0;
+            for (int m = 2; m < n.length; m++) {
+                if (n[m] > 0) {
+                    escapeMass += n[m] * Math.pow(eps, m - 1);
+                }
+            }
+            if (random.nextDouble() < escapeMass) {
+                int m = sampleOrder(n, eps, escapeMass);
+                BitSet[] parts = sampleBoundaryParts(cb, subclades(cb), m);
+                double logp = (m - 1) * Math.log(eps);
+                if (parts != null) {
+                    for (BitSet bp : parts) {
+                        logp += simulate(getClade(bp));
+                    }
+                }
+                return logp;
+            }
+            CladePartition p = samplePartition(c);
+            double logp = Math.log(1.0 - escapeMass) + p.getLogCCP();
+            return logp + simulate(p.getChildClades()[0]) + simulate(p.getChildClades()[1]);
+        }
+        CladePartition p = samplePartition(c); // non-reservable: observed split, no discount
+        return p.getLogCCP() + simulate(p.getChildClades()[0]) + simulate(p.getChildClades()[1]);
+    }
+
+    /** Draws a region order m in {2..} with probability proportional to {@code M_m eps^(m-1)}. */
+    private int sampleOrder(int[] n, double eps, double escapeMass) {
+        double target = random.nextDouble() * escapeMass, acc = 0.0;
+        for (int m = 2; m < n.length; m++) {
+            if (n[m] > 0) {
+                acc += n[m] * Math.pow(eps, m - 1);
+                if (target < acc) {
+                    return m;
+                }
+            }
+        }
+        for (int m = n.length - 1; m >= 2; m--) {
+            if (n[m] > 0) {
+                return m; // numerical guard
+            }
+        }
+        return 2;
+    }
+
+    /** Samples an observed (red) split of {@code c} with probability proportional to its CCP. */
+    private CladePartition samplePartition(Clade c) {
+        List<CladePartition> partitions = c.getPartitions();
+        double target = random.nextDouble(), acc = 0.0;
+        for (CladePartition p : partitions) {
+            acc += p.getCCP();
+            if (target < acc) {
+                return p;
+            }
+        }
+        return partitions.get(partitions.size() - 1);
+    }
+
+    /**
+     * Weighted-reservoir samples one boundary of {@code c} into {@code m} observed subclades,
+     * proportional to its all-novel pathcount (so that, combined with order sampling, every distinct
+     * novel resolution is equiprobable at {@code eps^(m-1)}). Returns the parts, or {@code null} if
+     * none/op-budget.
+     */
+    private BitSet[] sampleBoundaryParts(BitSet c, List<BitSet> subs, int m) {
+        boundaryPick = null;
+        boundaryWeightSeen = 0.0;
+        enumOps = 0;
+        try {
+            sampleBoundaryWalk(c, subs, m, 0, BitSet.newBitSet(leafArraySize), new ArrayList<>(m));
+        } catch (BudgetExceeded e) {
+            return boundaryPick; // whatever was picked before the cap (may be null)
+        }
+        return boundaryPick;
+    }
+
+    private BitSet[] boundaryPick;
+    private double boundaryWeightSeen;
+
+    private void sampleBoundaryWalk(BitSet c, List<BitSet> subs, int m, int startIdx,
+                                    BitSet used, List<BitSet> chosen) {
+        if (++enumOps > OPS_BUDGET) {
+            throw BUDGET_EXCEEDED;
+        }
+        if (chosen.size() == m - 1) {
+            BitSet last = BitSet.newBitSet(c);
+            last.andNot(used);
+            if (last.isEmpty() || !isObs(last)) {
+                return;
+            }
+            if (compareBitSets(chosen.get(chosen.size() - 1), last) >= 0) {
+                return;
+            }
+            BitSet[] parts = new BitSet[m];
+            for (int i = 0; i < m - 1; i++) {
+                parts[i] = chosen.get(i);
+            }
+            parts[m - 1] = last;
+            int pc = countAllNovelResolutions(c, parts);
+            if (pc <= 0) {
+                return;
+            }
+            boundaryWeightSeen += pc;
+            if (random.nextDouble() * boundaryWeightSeen < pc) { // weighted reservoir
+                boundaryPick = parts;
+            }
+            return;
+        }
+        for (int i = startIdx; i < subs.size(); i++) {
+            BitSet pb = subs.get(i);
+            if (pb.intersects(used)) {
+                continue;
+            }
+            chosen.add(pb);
+            BitSet newUsed = BitSet.newBitSet(used);
+            newUsed.or(pb);
+            sampleBoundaryWalk(c, subs, m, i + 1, newUsed, chosen);
+            chosen.remove(chosen.size() - 1);
+        }
+    }
 
     @Override
     public Tree sampleTree(HeightSettingStrategy heightStrategy) {
         throw new UnsupportedOperationException(
-                "MRegCCD escape sampling is not yet implemented; use getLogProbabilityOfTree for scoring.");
+                "MRegCCD materialised-tree sampling is not implemented; sampleTreeLogProbability() "
+                        + "(used by the PIT) simulates draws without building trees.");
     }
 }
