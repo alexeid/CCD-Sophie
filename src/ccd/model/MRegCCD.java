@@ -102,6 +102,17 @@ public class MRegCCD extends CCD1 {
         this.useTail = useTail;
     }
 
+    /**
+     * Builds an MRegCCD on {@code trees} with {@code mu} selected by maximising cross-validated
+     * held-out log-probability (see {@link ccd.algorithms.regularisation.MRegCCDParameterOptimiser}),
+     * rather than the fixed {@link #DEFAULT_MU}. The honest, no-peeking counterpart of
+     * {@code KRegCCD.withOptimisedParameters}.
+     */
+    public static MRegCCD withOptimisedMu(List<Tree> trees) {
+        double mu = ccd.algorithms.regularisation.MRegCCDParameterOptimiser.optimiseMu(trees).mu();
+        return new MRegCCD(trees, 0.0, mu);
+    }
+
     private static void validate(double mu, int reserveDepth) {
         if (mu <= 0 || mu >= 1) {
             throw new IllegalArgumentException("mu must be in (0, 1), got " + mu);

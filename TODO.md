@@ -65,8 +65,11 @@ Currently lives as static methods in `src/ccd/experiments/regularisation/GRegCCD
    tail super-normalises (sum=2.42); and **M_2 == CCD0-expanded splits** cross-checked against the
    real `CCD0` (49 clades). Driver `GRegCCDRSV2` cross-checks the class reproduces its score (within
    op-cap noise). Escape SAMPLING still TODO (needed for step 5 / PIT).
-3. **Fair fit**: fit mu by leave-k-out CV (not the test-held-out grid) for an apples-to-apples
-   comparison with KRegCCD's CV-fitted mu.
+3. ~~**Fair fit**~~ **DONE**: `MRegCCDParameterOptimiser` does CONTIGUOUS k-fold CV (mu only),
+   scoring with the tail ON (a tail-free score super-normalises and would bias mu up). `MRegCCD.withOptimisedMu`
+   wraps it. RSV2 fair result (CV-fit mu on train, no peeking, score independent test): MRegCCD 1-param
+   CV-fit mu=0.0159 -> **-58.09**; KRegCCD 2-param -> -56.36; gap **1.73 nat**. CV mu == peeked-best mu,
+   so the held-out grid wasn't overfitting.
 4. **Try alpha smoothing** on the observed CCPs (optional 2nd knob) to see if it helps the novel
    trees without hurting common -- but the point was ONE parameter, so keep this a sanity check.
 5. **PIT calibration** of the 1-mu model (add to `KRegPITExperiment` as a 4th model).

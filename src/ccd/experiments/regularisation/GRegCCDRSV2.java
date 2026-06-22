@@ -149,6 +149,21 @@ public class GRegCCDRSV2 {
         mregAll /= test.size();
         System.out.printf("  MRegCCD class at mu=%.5f: held-out logP/tree = %.3f  (driver reserve %.3f; delta %.4f)%n",
                 bestRMu, mregAll, bestR, mregAll - bestR);
+        // FAIR comparison: fit mu by CONTIGUOUS k-fold CV on TRAIN only (no peeking at TEST), then
+        // score the independent TEST set -- apples-to-apples with KRegCCD.withOptimisedParameters.
+        ccd.algorithms.regularisation.MRegCCDParameterOptimiser.MuResult mr =
+                ccd.algorithms.regularisation.MRegCCDParameterOptimiser.optimiseMu(train);
+        ccd.model.MRegCCD mregCV = new ccd.model.MRegCCD(train, 0.0, mr.mu());
+        double mregCVAll = 0;
+        for (Tree t : test) mregCVAll += mregCV.getLogProbabilityOfTree(t);
+        mregCVAll /= test.size();
+        System.out.printf("%n=== FAIR (CV-fit mu on train, no peeking) ===%n");
+        System.out.printf("  MRegCCD: CV-fit mu = %.5f -> held-out logP/tree = %.3f (1 param)%n",
+                mr.mu(), mregCVAll);
+        System.out.printf("  KRegCCD: CV-fit (alpha,mu)    -> held-out logP/tree = %.3f (2 param)%n",
+                kregMeanLogP);
+        System.out.printf("  (peeked-best MRegCCD %.3f at mu=%.5f; CCD1-common %.3f)%n",
+                bestR, bestRMu, ccd1Common / nc);
         System.out.printf("  at best mu: %d fallback clades (M2=M3=0); region tops on held-out: %d total, "
                 + "%d hit a fallback clade (%.1f%%)%n",
                 bestFbClades, bestTops, bestFbHits, 100.0 * bestFbHits / Math.max(1, bestTops));
