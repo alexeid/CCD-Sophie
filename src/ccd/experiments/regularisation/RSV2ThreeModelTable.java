@@ -2,6 +2,8 @@ package ccd.experiments.regularisation;
 
 import beast.base.evolution.tree.Tree;
 import ccd.algorithms.LoadOrStoreTrees;
+import ccd.algorithms.regularisation.KRegCCDParameterOptimiser;
+import ccd.algorithms.regularisation.NNIHeldOutComparison.FoldAssignment;
 import ccd.model.CCD1;
 import ccd.model.KRegCCD;
 import ccd.model.RegCCD;
@@ -119,9 +121,12 @@ public class RSV2ThreeModelTable {
         double muLo = 0.001, muHi = 0.01;
         File tsv = new File("doc/rsv2-musweep.tsv");
         try (PrintWriter w = new PrintWriter(new FileWriter(tsv))) {
-            w.println("mu\tpnovel\tempirical\tmeanLogP");
+            // cvLogP = leave-k-out CV held-out mean logP/tree on the TRAINING half only (the criterion
+            // the optimiser uses, profiled here over the same mu grid); meanLogP is the second-half
+            // held-out density. Both peak near the mu where the model's P(novel) matches the empirical rate.
+            w.println("mu\tpnovel\tempirical\tmeanLogP\tcvLogP");
             System.out.printf("%nempirical novel-clade rate among held-out trees = %.3f%n", emp);
-            System.out.printf("%-9s %12s %16s%n", "mu", "P(novel)", "meanLogP/tree");
+            System.out.printf("%-9s %12s %16s %16s%n", "mu", "P(novel)", "meanLogP/tree", "cvLogP/tree");
             double bestMu = 0, bestLogP = Double.NEGATIVE_INFINITY;
             for (int i = 0; i < gridN; i++) {
                 double mu = muLo * Math.pow(muHi / muLo, i / (double) (gridN - 1));   // log-spaced
@@ -129,9 +134,12 @@ public class RSV2ThreeModelTable {
                 double s = 0;
                 for (Tree t : test) s += sweep.getLogProbabilityOfTree(t, mu);
                 double meanLogP = s / nTest;
+                double cvLogP = KRegCCDParameterOptimiser.crossValidatedLogProb(
+                        train, KRegCCDParameterOptimiser.DEFAULT_FOLDS, FoldAssignment.CONTIGUOUS, ALPHA, mu)
+                        / train.size();
                 if (meanLogP > bestLogP) { bestLogP = meanLogP; bestMu = mu; }
-                w.printf("%.6f\t%.6f\t%.6f\t%.6f%n", mu, pnov, emp, meanLogP);
-                System.out.printf("%-9.5f %12.3f %16.3f%n", mu, pnov, meanLogP);
+                w.printf("%.6f\t%.6f\t%.6f\t%.6f\t%.6f%n", mu, pnov, emp, meanLogP, cvLogP);
+                System.out.printf("%-9.5f %12.3f %16.3f %16.3f%n", mu, pnov, meanLogP, cvLogP);
             }
             System.out.printf("%nheld-out logP optimum at mu = %.5f (mean logP = %.3f); CV-fitted mu = %.5f%n",
                     bestMu, bestLogP, kreg.getMu());
