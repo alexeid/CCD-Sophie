@@ -107,6 +107,35 @@ data `pit-yule50.params.tsv`.
   Only one n=300 fit touches the 0.05 ceiling. This both makes the large-n parameter estimates
   unreliable and may cap KRegCCD's large-n calibration (μ is held above its true optimum).
 
+### MRegCCD added — full 100-rep, 4-model run (2026-06-23)
+
+Re-ran the sweep with the current code (CONTIGUOUS CV folds + lowered `mu` floor) over **all 100 reps**
+(rep100's misnamed `yule-n50-0.trees` now globbed in), adding **MRegCCD** — the one-parameter
+"per-new-split" model (`ccd.model.MRegCCD`; see `MRegCCD` notes) — as a fourth model. For the PIT,
+MRegCCD is built **tail-off** so its self-consistent sampler and its scorer are the same distribution.
+Figure `pit-yule50-4model.pdf`, data `pit-yule50-4model.tsv` (params `pit-yule50-4model.params.tsv`,
+still the KRegCCD `(alpha=0.4, mu)` fits).
+
+Pooled L1 (0% excluded = full support):
+
+| n | MRegCCD (1 param) | KRegCCD (2 param) | CCD1 | CCD0 |
+|------|-------------------|-------------------|------------------|------------------|
+| 300  | **0.074** (0%)    | 0.084 (0%)        | 0.028 (29% excl) | 0.629 (11% excl) |
+| 1000 | 0.070 (0%)        | **0.052** (0%)    | 0.021 (14% excl) | 0.651 (5% excl)  |
+| 3000 | 0.050 (0%)        | **0.033** (0%)    | 0.018 (8% excl)  | 0.668 (2% excl)  |
+
+- **MRegCCD is the second full-support model** (0% excluded at every n, like KRegCCD, unlike CCD1) and
+  is genuinely calibrated (L1 far below CCD0's ~0.65; well above the noise floor, so the residual is
+  real). It improves with n (0.074 → 0.070 → 0.050).
+- **At n = 300 the one-parameter MRegCCD (0.074) *beats* two-parameter KRegCCD (0.084)** — fewer
+  parameters overfit less at small samples. KRegCCD pulls ahead at n = 1000/3000, where the extra
+  flexibility pays off. This mirrors the FLAT-vs-SHARED small-vs-large-sample story.
+- CCD1 still has the lowest L1 on the trees it supports but its failure is **coverage** (8–29%
+  excluded); CCD0 stays grossly miscalibrated and does not improve with n.
+- Held-out logP (RSV2, separate experiment): MRegCCD 1-param −58.1 vs KRegCCD 2-param −56.4 (gap
+  ~1.7 nat) — the calibration here and the likelihood there tell the same story: a competitive,
+  full-support, genuinely one-parameter model.
+
 ---
 
 ## 3. Caveat: ESS ≠ nominal sample size
