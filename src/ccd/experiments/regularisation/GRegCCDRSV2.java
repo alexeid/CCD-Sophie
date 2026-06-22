@@ -33,6 +33,9 @@ public class GRegCCDRSV2 {
     static int nTaxa;
     /** observed splits: parent clade -> (canonical child clade -> training count). */
     static final Map<BitSet, Map<BitSet, Integer>> obs = new HashMap<>();
+    /** parent clade -> total observed split count (for conditional CCPs). */
+    static final Map<BitSet, Double> total = new HashMap<>();
+    private static final double LOG2 = Math.log(2);
 
     public static void main(String[] args) throws Exception {
         File treeFile = new File(args[0]);
@@ -84,6 +87,26 @@ public class GRegCCDRSV2 {
                 gregCommon / nc, ccd1Common / nc, kregCommon / nc, logZobs);
         System.out.printf("-- novel-containing held-out trees: %d (CCD1 scores 0 = -inf here) --%n", withNovel.size());
 
+        // ---- conditional "1-mu" per-new-split model: observed split -> (1-mu)*count/total_C,
+        // novel split -> mu * product over the escape region's novel splits of 1/bipartitions(size).
+        // Per-clade normalised (chain rule), no global Z. Matches CCD1 on common trees up to (n-1)log(1-mu).
+        for (Map.Entry<BitSet, Map<BitSet, Integer>> e : obs.entrySet()) {
+            double tot = 0; for (int c : e.getValue().values()) tot += c;
+            total.put(e.getKey(), tot);
+        }
+        System.out.printf("%n%-9s %16s %16s %14s%n", "mu", "1mu logP/tree", "1mu common/tree", "(CCD1 common)");
+        double bestMu = 0, best1mu = Double.NEGATIVE_INFINITY;
+        for (int gi = 0; gi < 25; gi++) {
+            double mu = 1e-4 * Math.pow(0.2 / 1e-4, gi / 24.0);
+            double mAll = 0, mCom = 0;
+            for (int i = 0; i < test.size(); i++) mAll += scoreMu1(test.get(i), mu);
+            for (int i : common) mCom += scoreMu1(test.get(i), mu);
+            mAll /= test.size(); mCom /= nc;
+            if (mAll > best1mu) { best1mu = mAll; bestMu = mu; }
+            System.out.printf("%-9.5f %16.3f %16.3f %14.3f%n", mu, mAll, mCom, ccd1Common / nc);
+        }
+        System.out.printf("1-mu model best held-out logP/tree = %.3f at mu = %.5f%n", best1mu, bestMu);
+
         System.out.printf("%n%-9s %14s %12s %14s%n", "eps", "GReg logP/tree", "logZ", "(KReg logP/tree)");
         double bestEps = 0, bestLogP = Double.NEGATIVE_INFINITY;
         int grid = 32;
@@ -100,6 +123,37 @@ public class GRegCCDRSV2 {
         }
         System.out.printf("%nGRegCCD best held-out logP/tree = %.3f at eps = %.5f (1 parameter)%n", bestLogP, bestEps);
         System.out.printf("KRegCCD   held-out logP/tree = %.3f (2 parameters, CV-fitted)%n", kregMeanLogP);
+    }
+
+    /** log bipartitions of an m-clade: log(2^(m-1) - 1). */
+    static double logBip(int m) {
+        if (m <= 2) return 0.0;
+        return (m - 1) * LOG2 + Math.log1p(-Math.pow(2.0, -(m - 1)));
+    }
+
+    /** Conditional "1-mu" per-new-split log-probability of a tree (per-clade normalised, no global Z). */
+    static double scoreMu1(Tree t, double mu) {
+        Map<Node, BitSet> bits = new HashMap<>();
+        computeBits(t.getRoot(), bits);
+        double logP = 0;
+        double log1mMu = Math.log(1 - mu), logMu = Math.log(mu);
+        for (Node v : t.getNodesAsArray()) {
+            if (v.isLeaf()) continue;
+            BitSet pb = bits.get(v);
+            int m = pb.cardinality();
+            BitSet canon = canonChild(pb, bits.get(v.getChildren().get(0)), bits.get(v.getChildren().get(1)));
+            Map<BitSet, Integer> sp = obs.get(pb);
+            boolean cladeObserved = sp != null;
+            Integer cnt = cladeObserved ? sp.get(canon) : null;
+            if (cnt != null) {
+                logP += log1mMu + Math.log(cnt) - Math.log(total.get(pb)); // observed split: (1-mu)*count/total
+            } else if (cladeObserved) {
+                logP += logMu - logBip(m);                                 // region entry: escape at observed clade
+            } else {
+                logP += -logBip(m);                                        // inner novel split
+            }
+        }
+        return logP;
     }
 
     /** (novel split count, sum of log observed-split counts) for a tree. */
