@@ -80,7 +80,10 @@ Currently lives as static methods in `src/ccd/experiments/regularisation/GRegCCD
    `KRegPITExperiment.buildModel` (CV-fit mu, tail off), so the sweep supports it. Yule50 rep1 n=1000:
    mreg L1=0.17 (0% excluded, full support); kreg 0.136 (0%); ccd1 0.116 but 23.5% excluded. mreg is
    full-support like KRegCCD and slightly less calibrated (1 vs 2 params) -- consistent with held-out.
-   Pooled multi-rep sweep is the next run (now with `mreg` in the model list).
+   Pooled 10-rep Yule50 sweep (n=1000, m=10000, noise floor ~0.035): mreg L1=0.088 (0% excl, full
+   support), kreg 0.073 (0%), ccd1 0.049 (9.5% excl), ccd0 0.649 (2.9% excl). mreg is the second
+   full-support model, genuinely calibrated, a touch behind 2-param kreg. Full 100-rep all-sizes sweep
+   (the established process, now with `mreg`) is the next run.
 
 ## Other artifacts from this session (all committed)
 
