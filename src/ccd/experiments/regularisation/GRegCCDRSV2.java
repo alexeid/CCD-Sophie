@@ -110,20 +110,44 @@ public class GRegCCDRSV2 {
         // ---- conditional 1-mu with the PROPER eps-reserve escape (per-new-split) ----
         allObs = new ArrayList<>(obs.keySet());
         for (int i = 0; i < nTaxa; i++) { BitSet s = BitSet.newBitSet(nTaxa); s.set(i); allObs.add(s); }
-        System.out.printf("%n%-9s %16s %16s %14s%n", "mu", "reserve logP/tree", "reserve common", "(KReg all)");
-        double bestRMu = 0, bestR = Double.NEGATIVE_INFINITY;
+        int nNov = withNovel.size();
+        System.out.printf("%n%-9s %14s %12s %12s %10s%n",
+                "mu", "reserve all", "reserve com", "reserve nov", "fbRegHit");
+        double bestRMu = 0, bestR = Double.NEGATIVE_INFINITY, bestRNov = 0, bestRCom = 0;
+        int[] bestHist = null; int bestFbClades = 0, bestFbHits = 0, bestTops = 0;
         for (int gi = 0; gi < 22; gi++) {
             double mu = 1e-4 * Math.pow(0.2 / 1e-4, gi / 21.0);
-            epsCache.clear(); fallbackClades = 0;
-            double rAll = 0, rCom = 0;
+            epsCache.clear(); fallbackClades = 0; fallbackSet.clear();
+            java.util.Arrays.fill(regionHist, 0); fallbackRegionHits = 0; totalRegionTops = 0;
+            double rAll = 0, rCom = 0, rNov = 0;
             for (int i = 0; i < test.size(); i++) rAll += scoreReserve(test.get(i), mu);
             for (int i : common) rCom += scoreReserve(test.get(i), mu);
-            rAll /= test.size(); rCom /= nc;
-            if (rAll > bestR) { bestR = rAll; bestRMu = mu; }
-            System.out.printf("%-9.5f %16.3f %16.3f %14.3f%n", mu, rAll, rCom, kregMeanLogP);
+            for (int i : withNovel) rNov += scoreReserve(test.get(i), mu);
+            rAll /= test.size(); rCom /= nc; rNov /= Math.max(1, nNov);
+            if (rAll > bestR) {
+                bestR = rAll; bestRMu = mu; bestRNov = rNov; bestRCom = rCom;
+                bestHist = regionHist.clone(); bestFbClades = fallbackClades;
+                bestFbHits = fallbackRegionHits; bestTops = totalRegionTops;
+            }
+            System.out.printf("%-9.5f %14.3f %12.3f %12.3f %7d/%-5d%n",
+                    mu, rAll, rCom, rNov, fallbackRegionHits, totalRegionTops);
         }
+        // KRegCCD common/novel breakdown for an apples-to-apples gap decomposition
+        double kregCom = 0, kregNov = 0;
+        for (int i : common) kregCom += kreg.getLogProbabilityOfTree(test.get(i));
+        for (int i : withNovel) kregNov += kreg.getLogProbabilityOfTree(test.get(i));
+        kregCom /= nc; kregNov /= Math.max(1, nNov);
         System.out.printf("reserve 1-mu model best held-out logP/tree = %.3f at mu = %.5f%n", bestR, bestRMu);
-        System.out.printf("  (KRegCCD %.3f, CCD1-common %.3f)%n", kregMeanLogP, ccd1Common / nc);
+        System.out.printf("  reserve  : all %.3f  common %.3f  novel %.3f  (%d common, %d novel)%n",
+                bestR, bestRCom, bestRNov, nc, nNov);
+        System.out.printf("  KRegCCD  : all %.3f  common %.3f  novel %.3f%n", kregMeanLogP, kregCom, kregNov);
+        System.out.printf("  CCD1-com %.3f%n", ccd1Common / nc);
+        System.out.printf("  at best mu: %d fallback clades (M2=M3=0); region tops on held-out: %d total, "
+                + "%d hit a fallback clade (%.1f%%)%n",
+                bestFbClades, bestTops, bestFbHits, 100.0 * bestFbHits / Math.max(1, bestTops));
+        System.out.print("  region boundary-size histogram (m -> count): ");
+        for (int m = 2; m < bestHist.length; m++) if (bestHist[m] > 0) System.out.printf("%d:%d  ", m, bestHist[m]);
+        System.out.println();
 
         System.out.printf("%n%-9s %14s %12s %14s%n", "eps", "GReg logP/tree", "logZ", "(KReg logP/tree)");
         double bestEps = 0, bestLogP = Double.NEGATIVE_INFINITY;
@@ -148,6 +172,11 @@ public class GRegCCDRSV2 {
     static final Map<BitSet, List<BitSet>> subCache = new HashMap<>();
     static final Map<BitSet, Double> epsCache = new HashMap<>();  // per current mu
     static int fallbackClades = 0;
+    // ---- diagnostics (reset per mu) ----
+    static final java.util.Set<BitSet> fallbackSet = new java.util.HashSet<>(); // clades that used the eps fallback
+    static int[] regionHist = new int[64];   // boundary-size histogram of region tops scored on held-out trees
+    static int fallbackRegionHits = 0;       // region tops whose clade used the eps fallback
+    static int totalRegionTops = 0;          // region tops scored (over the all-test pass)
 
     static boolean isObs(BitSet x) {
         return x.cardinality() == 1 || obs.containsKey(x);
@@ -167,36 +196,163 @@ public class GRegCCDRSV2 {
         });
     }
 
-    /** Number of unordered observed-subclade bipartitions of N (ways to split N into two observed parts). */
-    static int splitPairs(BitSet N) {
-        int low = N.nextSetBit(0), cnt = 0;
-        for (BitSet X : subclades(N)) {
-            if (!X.get(low)) continue;            // canonical half contains N's lowest bit
-            BitSet B = BitSet.newBitSet(N); B.andNot(X);
-            if (isObs(B)) cnt++;
+    /* ---- generalized per-clade reserve (mirrors KRegCCD.computeReg) ----
+     * M_m(C) = number of all-novel resolutions of C with a boundary of m observed subclades (FLAT:
+     * each distinct resolution counted once). The escape mass at C is
+     *   R(C; eps) = sum_{m>=2} M_m eps^(m-1)   (m boundary parts -> m-1 new splits; one eps each),
+     * and eps(C) solves R = mu over the computed orders m = 2..RESERVE_DEPTH; orders beyond that are
+     * a geometric tail. A clade is reservable iff some M_m > 0 (cherries / no-escape clades are not). */
+    static int RESERVE_DEPTH =
+            Integer.parseInt(System.getProperty("greg.reserveDepth", "5")); // max boundary size enumerated
+    static final long OPS_BUDGET = Long.parseLong(System.getProperty("greg.enumOps", "20000000"));
+    static long enumOps;
+    static final class Budget extends RuntimeException { Budget() { super(null, null, false, false); } }
+    static final Budget BUDGET = new Budget();
+    static final Map<BitSet, int[]> countsCache = new HashMap<>(); // clade -> M_m counts (mu-independent)
+
+    /** M_m counts (index m = boundary size, 2..min(|C|,RESERVE_DEPTH)); cached, mu-independent. */
+    static int[] countsFor(BitSet C) {
+        int[] cached = countsCache.get(C);
+        if (cached != null) return cached;
+        int card = C.cardinality();
+        int[] n = new int[Math.min(card, RESERVE_DEPTH) + 1];
+        if (card >= 2) {
+            List<BitSet> subs = subclades(C);
+            enumOps = 0;
+            for (int m = 2; m < n.length; m++) {
+                try { n[m] = countBoundaries(C, subs, m); }
+                catch (Budget b) { break; }   // deeper orders omitted (negligible, like the tail)
+            }
         }
-        return cnt;
+        countsCache.put(C, n);
+        return n;
     }
 
-    /** Per-clade escape root eps solving M2*eps + M3*eps^2 = mu (recombinations + one-novel-clade). */
+    static boolean reservable(BitSet C) {
+        for (int v : countsFor(C)) if (v > 0) return true;
+        return false;
+    }
+
+    /** Escape root eps solving sum_{m>=2} M_m eps^(m-1) = mu (monotone bisection); crude fallback if
+     *  C has no escape route up to RESERVE_DEPTH (should not happen for an actually-escaped region top). */
     static double epsFor(BitSet C, double mu) {
         Double cached = epsCache.get(C);
         if (cached != null) return cached;
-        int low = C.nextSetBit(0), m2 = 0, m3 = 0;
-        Map<BitSet, Integer> sp = obs.get(C);
-        for (BitSet A : subclades(C)) {
-            BitSet B = BitSet.newBitSet(C); B.andNot(A);
-            if (A.get(low)) {                         // M2: recombination C -> {A, C\A}, both observed, split unseen
-                if (isObs(B) && (sp == null || !sp.containsKey(A))) m2++;
-            }
-            if (!isObs(B) && !B.isEmpty()) m3 += splitPairs(B);   // M3: outer part A, novel remainder B
-        }
         double eps;
-        if (m3 > 0) eps = (-m2 + Math.sqrt((double) m2 * m2 + 4.0 * m3 * mu)) / (2.0 * m3);
-        else if (m2 > 0) eps = mu / m2;
-        else { eps = mu; fallbackClades++; }          // no low-order escape; crude fallback
+        if (!reservable(C)) { eps = mu; fallbackClades++; fallbackSet.add(C); }
+        else eps = solveEps(countsFor(C), mu);
         epsCache.put(C, eps);
         return eps;
+    }
+
+    /** Omitted-tail escape mass beyond the computed orders: geometric bound from the top two orders
+     *  (mirrors KRegCCD's TailMode.BOUND). Clamped to [0, mu]. */
+    static double tailFor(BitSet C, double mu) {
+        int[] n = countsFor(C);
+        int last = n.length - 1;
+        if (last < 3) return 0.0;
+        int nLast = n[last], nPrev = n[last - 1];
+        if (nLast <= 0 || nPrev <= 0) return 0.0;
+        double eps = epsFor(C, mu);
+        double rho = ((double) nLast / nPrev) * eps;   // ratio of successive order masses
+        if (rho <= 0 || rho >= 1) return 0.0;
+        return Math.min(nLast * Math.pow(eps, last - 1) * rho / (1 - rho), mu);
+    }
+
+    static double solveEps(int[] n, double mu) {
+        double lo = 0, hi = 1;
+        while (evalReserve(n, hi) < mu) hi *= 2;
+        for (int it = 0; it < 100; it++) {
+            double mid = 0.5 * (lo + hi);
+            if (evalReserve(n, mid) < mu) lo = mid; else hi = mid;
+        }
+        return 0.5 * (lo + hi);
+    }
+
+    /** sum_{m>=2} n[m] x^(m-1). */
+    static double evalReserve(int[] n, double x) {
+        double s = 0;
+        for (int m = 2; m < n.length; m++) if (n[m] > 0) s += n[m] * Math.pow(x, m - 1);
+        return s;
+    }
+
+    /** Count m-part boundaries of C into observed subclades, each weighted by its all-novel pathcount (FLAT). */
+    static int countBoundaries(BitSet C, List<BitSet> subs, int m) {
+        return enumerateBoundaries(C, subs, m, 0, BitSet.newBitSet(nTaxa), new ArrayList<>(m));
+    }
+
+    static int enumerateBoundaries(BitSet C, List<BitSet> subs, int m, int startIdx,
+                                   BitSet used, List<BitSet> chosen) {
+        if (++enumOps > OPS_BUDGET) throw BUDGET;
+        if (chosen.size() == m - 1) {
+            BitSet last = BitSet.newBitSet(C); last.andNot(used);
+            if (last.isEmpty() || !isObs(last)) return 0;
+            if (compareBitSets(chosen.get(chosen.size() - 1), last) >= 0) return 0; // canonical: last is largest
+            BitSet[] parts = new BitSet[m];
+            for (int i = 0; i < m - 1; i++) parts[i] = chosen.get(i);
+            parts[m - 1] = last;
+            return countAllNovelResolutions(C, parts);
+        }
+        int count = 0;
+        for (int i = startIdx; i < subs.size(); i++) {
+            BitSet pb = subs.get(i);
+            if (pb.intersects(used)) continue;
+            chosen.add(pb);
+            BitSet newUsed = BitSet.newBitSet(used); newUsed.or(pb);
+            count += enumerateBoundaries(C, subs, m, i + 1, newUsed, chosen);
+            chosen.remove(chosen.size() - 1);
+        }
+        return count;
+    }
+
+    /** Number of all-novel binary resolutions of C into the given observed parts (subset DP over parts). */
+    static int countAllNovelResolutions(BitSet C, BitSet[] parts) {
+        int k = parts.length;
+        if (k == 1) return 1;
+        int full = (1 << k) - 1;
+        BitSet[] unionOf = new BitSet[1 << k];
+        unionOf[0] = BitSet.newBitSet(nTaxa);
+        for (int mask = 1; mask <= full; mask++) {
+            int low = Integer.numberOfTrailingZeros(mask);
+            BitSet u = BitSet.newBitSet(unionOf[mask & (mask - 1)]); u.or(parts[low]);
+            unionOf[mask] = u;
+        }
+        int[] f = new int[1 << k];
+        for (int mask = 1; mask <= full; mask++) {
+            if (Integer.bitCount(mask) == 1) { f[mask] = 1; continue; }
+            int low = mask & (-mask), rest = mask ^ low, count = 0;
+            for (int sub = rest; ; sub = (sub - 1) & rest) {
+                int s1 = sub | low, s2 = mask ^ s1;
+                if (s2 != 0 && splitAllowed(mask == full, unionOf[mask], unionOf[s1], unionOf[s2]))
+                    count += f[s1] * f[s2];
+                if (sub == 0) break;
+            }
+            f[mask] = count;
+        }
+        return f[full];
+    }
+
+    /** A split is allowed in a maximal region iff: at the region root C (observed) the split is
+     *  unobserved (a real escape); at an intermediate node the clade itself is novel (a maximal
+     *  region stops at observed clades, matching {@link #boundarySize}). */
+    static boolean splitAllowed(boolean top, BitSet union, BitSet a, BitSet b) {
+        return top ? !isSplitObserved(union, a, b) : !isObs(union);
+    }
+
+    static boolean isSplitObserved(BitSet parent, BitSet a, BitSet b) {
+        Map<BitSet, Integer> sp = obs.get(parent);
+        if (sp == null) return false;
+        return sp.containsKey(a.get(parent.nextSetBit(0)) ? a : b);
+    }
+
+    /** Canonical total order on clade bitsets (lexicographic by set-bit indices). */
+    static int compareBitSets(BitSet a, BitSet b) {
+        int ia = a.nextSetBit(0), ib = b.nextSetBit(0);
+        while (ia >= 0 && ib >= 0) {
+            if (ia != ib) return Integer.compare(ia, ib);
+            ia = a.nextSetBit(ia + 1); ib = b.nextSetBit(ib + 1);
+        }
+        return Integer.compare(ia, ib);
     }
 
     /** Boundary size m of the escape region rooted at v (maximal observed/leaf subclades below). */
@@ -209,11 +365,13 @@ public class GRegCCDRSV2 {
         return m;
     }
 
-    /** Conditional 1-mu model with the proper eps-reserve escape. */
+    /** Conditional 1-mu model with the generalized eps-reserve escape and a reservability-gated
+     *  (1 - mu - tail) discount: only clades that can actually escape reserve mass; cherries and
+     *  no-escape clades keep the raw CCD1 CCP undiscounted (mirrors KRegCCD's reservable() gate). */
     static double scoreReserve(Tree t, double mu) {
         Map<Node, BitSet> bits = new HashMap<>();
         computeBits(t.getRoot(), bits);
-        double logP = 0, log1mMu = Math.log(1 - mu);
+        double logP = 0;
         for (Node v : t.getNodesAsArray()) {
             if (v.isLeaf()) continue;
             BitSet pb = bits.get(v);
@@ -221,10 +379,18 @@ public class GRegCCDRSV2 {
             BitSet canon = canonChild(pb, bits.get(v.getChildren().get(0)), bits.get(v.getChildren().get(1)));
             Integer cnt = obs.get(pb).get(canon);
             if (cnt != null) {
-                logP += log1mMu + Math.log(cnt) - Math.log(total.get(pb));  // observed split
+                if (reservable(pb)) {                                       // discount only escaping clades
+                    double resv = Math.min(mu + tailFor(pb, mu), 1 - 1e-12);
+                    logP += Math.log(1 - resv);
+                }
+                logP += Math.log(cnt) - Math.log(total.get(pb));           // raw CCD1 CCP
             } else {
                 int m = boundarySize(v, bits);                              // region top: eps^(new splits)
-                logP += (m - 1) * Math.log(epsFor(pb, mu));
+                double eps = epsFor(pb, mu);                                 // (populates fallbackSet)
+                logP += (m - 1) * Math.log(eps);
+                totalRegionTops++;
+                regionHist[Math.min(m, regionHist.length - 1)]++;
+                if (fallbackSet.contains(pb)) fallbackRegionHits++;
             }
         }
         return logP;

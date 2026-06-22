@@ -21,6 +21,27 @@ The 1-parameter model is within **2.5 nats** of two-parameter KRegCCD, and BEATS
 common trees (-51.3 vs -52.3; raw CCPs, no alpha). The residual gap is reserve DEPTH
 (our order-2 M2/M3 truncation vs KRegCCD's full depth + tail), not the idea.
 
+> **UPDATE 2026-06-22 (TODO1 done; the "gap is depth" claim above is WRONG).**
+> Generalised `epsFor` to arbitrary depth (M4+) with a geometric tail, and gated the `(1-mu)`
+> discount on reservability (cherries / no-escape clades keep the raw CCP). Re-measured on RSV2
+> (train/test 1000):
+> - `fallbackClades = 0` on RSV2 (the literal ask -- the M2=M3=0 fallback never fires).
+> - The **reservability gate is the genuine win**: best held-out -58.65 -> **-58.11**, gap 2.29 -> **1.75 nat**.
+> - **Deeper orders are needed for NORMALISATION, not score.** Truncating at order 2 *looks* like it
+>   closes the gap (-56.40, ~= KReg -56.36) but is **super-normalised**: it discounts observed splits
+>   by `(1-mu)` yet still scores m>=3 regions, so the conditional sums to `1 + tail > 1` at every
+>   reservable clade. Depth>=3 carries the tail and converges to the honest **-58.1**.
+> - The honest **1.75-nat residual is structural, not depth**: 714/939 held-out region tops are m=2
+>   recombinations priced `eps^1`; KRegCCD makes recombinations RED (alpha-expanded backbone) and only
+>   spends `eps` on true novel clades (m>=3). Closing it needs alpha -- a 2nd knob (see step 4),
+>   i.e. converging back toward KRegCCD.
+> - Gap decomposition at best mu: common 0.28 nat, **novel 2.71 nat** (the recombination pricing).
+> - Driver now: generalised `countsFor`/`countBoundaries`/`countAllNovelResolutions`/`solveEps`/
+>   `tailFor` (ported from KRegCCD), reservability-gated `scoreReserve`, and held-out diagnostics
+>   (fbClades, region-size histogram, common/novel breakdown). `-Dgreg.reserveDepth` (default 5),
+>   `-Dgreg.enumOps` (default 2e7). TODO: confirm the super-normalisation claim with a small-n exact
+>   normalisation test when promoting to `MRegCCD` (step 2).
+
 ### The model (conditional per-new-split, per-clade normalised, no global Z)
 At each observed clade C:
 - observed split: `(1-mu) * count / total_C`  (= CCD1 scaled, so matches CCD1 on common trees up to (n-1)log(1-mu))
