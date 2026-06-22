@@ -65,8 +65,8 @@ public class GRegCCDRSV2 {
 
         System.out.printf("%n%-9s %14s %12s %14s%n", "eps", "GReg logP/tree", "logZ", "(KReg logP/tree)");
         double bestEps = 0, bestLogP = Double.NEGATIVE_INFINITY;
-        int grid = 30;
-        double lo = 1e-4, hi = 0.5;
+        int grid = 32;
+        double lo = 1e-4, hi = 0.95;
         for (int g = 0; g < grid; g++) {
             double eps = lo * Math.pow(hi / lo, g / (double) (grid - 1));
             double logEps = Math.log(eps);
