@@ -107,6 +107,24 @@ public class GRegCCDRSV2 {
         }
         System.out.printf("1-mu model best held-out logP/tree = %.3f at mu = %.5f%n", best1mu, bestMu);
 
+        // ---- conditional 1-mu with the PROPER eps-reserve escape (per-new-split) ----
+        allObs = new ArrayList<>(obs.keySet());
+        for (int i = 0; i < nTaxa; i++) { BitSet s = BitSet.newBitSet(nTaxa); s.set(i); allObs.add(s); }
+        System.out.printf("%n%-9s %16s %16s %14s%n", "mu", "reserve logP/tree", "reserve common", "(KReg all)");
+        double bestRMu = 0, bestR = Double.NEGATIVE_INFINITY;
+        for (int gi = 0; gi < 22; gi++) {
+            double mu = 1e-4 * Math.pow(0.2 / 1e-4, gi / 21.0);
+            epsCache.clear(); fallbackClades = 0;
+            double rAll = 0, rCom = 0;
+            for (int i = 0; i < test.size(); i++) rAll += scoreReserve(test.get(i), mu);
+            for (int i : common) rCom += scoreReserve(test.get(i), mu);
+            rAll /= test.size(); rCom /= nc;
+            if (rAll > bestR) { bestR = rAll; bestRMu = mu; }
+            System.out.printf("%-9.5f %16.3f %16.3f %14.3f%n", mu, rAll, rCom, kregMeanLogP);
+        }
+        System.out.printf("reserve 1-mu model best held-out logP/tree = %.3f at mu = %.5f%n", bestR, bestRMu);
+        System.out.printf("  (KRegCCD %.3f, CCD1-common %.3f)%n", kregMeanLogP, ccd1Common / nc);
+
         System.out.printf("%n%-9s %14s %12s %14s%n", "eps", "GReg logP/tree", "logZ", "(KReg logP/tree)");
         double bestEps = 0, bestLogP = Double.NEGATIVE_INFINITY;
         int grid = 32;
@@ -123,6 +141,93 @@ public class GRegCCDRSV2 {
         }
         System.out.printf("%nGRegCCD best held-out logP/tree = %.3f at eps = %.5f (1 parameter)%n", bestLogP, bestEps);
         System.out.printf("KRegCCD   held-out logP/tree = %.3f (2 parameters, CV-fitted)%n", kregMeanLogP);
+    }
+
+    // ---- proper eps-reserve escape (per-new-split, conditional) ----
+    static List<BitSet> allObs;                                   // observed clades + singletons
+    static final Map<BitSet, List<BitSet>> subCache = new HashMap<>();
+    static final Map<BitSet, Double> epsCache = new HashMap<>();  // per current mu
+    static int fallbackClades = 0;
+
+    static boolean isObs(BitSet x) {
+        return x.cardinality() == 1 || obs.containsKey(x);
+    }
+
+    /** Observed subclades (incl. singletons) strictly inside C. */
+    static List<BitSet> subclades(BitSet C) {
+        return subCache.computeIfAbsent(C, c -> {
+            List<BitSet> out = new ArrayList<>();
+            for (BitSet x : allObs) {
+                if (x.cardinality() < c.cardinality()) {
+                    BitSet t = BitSet.newBitSet(x); t.andNot(c);
+                    if (t.isEmpty()) out.add(x); // x subset of c
+                }
+            }
+            return out;
+        });
+    }
+
+    /** Number of unordered observed-subclade bipartitions of N (ways to split N into two observed parts). */
+    static int splitPairs(BitSet N) {
+        int low = N.nextSetBit(0), cnt = 0;
+        for (BitSet X : subclades(N)) {
+            if (!X.get(low)) continue;            // canonical half contains N's lowest bit
+            BitSet B = BitSet.newBitSet(N); B.andNot(X);
+            if (isObs(B)) cnt++;
+        }
+        return cnt;
+    }
+
+    /** Per-clade escape root eps solving M2*eps + M3*eps^2 = mu (recombinations + one-novel-clade). */
+    static double epsFor(BitSet C, double mu) {
+        Double cached = epsCache.get(C);
+        if (cached != null) return cached;
+        int low = C.nextSetBit(0), m2 = 0, m3 = 0;
+        Map<BitSet, Integer> sp = obs.get(C);
+        for (BitSet A : subclades(C)) {
+            BitSet B = BitSet.newBitSet(C); B.andNot(A);
+            if (A.get(low)) {                         // M2: recombination C -> {A, C\A}, both observed, split unseen
+                if (isObs(B) && (sp == null || !sp.containsKey(A))) m2++;
+            }
+            if (!isObs(B) && !B.isEmpty()) m3 += splitPairs(B);   // M3: outer part A, novel remainder B
+        }
+        double eps;
+        if (m3 > 0) eps = (-m2 + Math.sqrt((double) m2 * m2 + 4.0 * m3 * mu)) / (2.0 * m3);
+        else if (m2 > 0) eps = mu / m2;
+        else { eps = mu; fallbackClades++; }          // no low-order escape; crude fallback
+        epsCache.put(C, eps);
+        return eps;
+    }
+
+    /** Boundary size m of the escape region rooted at v (maximal observed/leaf subclades below). */
+    static int boundarySize(Node v, Map<Node, BitSet> bits) {
+        int m = 0;
+        for (Node c : v.getChildren()) {
+            if (c.isLeaf() || obs.containsKey(bits.get(c))) m++;
+            else m += boundarySize(c, bits);
+        }
+        return m;
+    }
+
+    /** Conditional 1-mu model with the proper eps-reserve escape. */
+    static double scoreReserve(Tree t, double mu) {
+        Map<Node, BitSet> bits = new HashMap<>();
+        computeBits(t.getRoot(), bits);
+        double logP = 0, log1mMu = Math.log(1 - mu);
+        for (Node v : t.getNodesAsArray()) {
+            if (v.isLeaf()) continue;
+            BitSet pb = bits.get(v);
+            if (!obs.containsKey(pb)) continue;       // novel clade: counted at its region top
+            BitSet canon = canonChild(pb, bits.get(v.getChildren().get(0)), bits.get(v.getChildren().get(1)));
+            Integer cnt = obs.get(pb).get(canon);
+            if (cnt != null) {
+                logP += log1mMu + Math.log(cnt) - Math.log(total.get(pb));  // observed split
+            } else {
+                int m = boundarySize(v, bits);                              // region top: eps^(new splits)
+                logP += (m - 1) * Math.log(epsFor(pb, mu));
+            }
+        }
+        return logP;
     }
 
     /** log bipartitions of an m-clade: log(2^(m-1) - 1). */
