@@ -142,6 +142,13 @@ public class GRegCCDRSV2 {
                 bestR, bestRCom, bestRNov, nc, nNov);
         System.out.printf("  KRegCCD  : all %.3f  common %.3f  novel %.3f%n", kregMeanLogP, kregCom, kregNov);
         System.out.printf("  CCD1-com %.3f%n", ccd1Common / nc);
+        // Cross-check: the promoted MRegCCD class must reproduce the driver's reserve score at best mu.
+        ccd.model.MRegCCD mreg = new ccd.model.MRegCCD(train, 0.0, bestRMu);
+        double mregAll = 0;
+        for (Tree t : test) mregAll += mreg.getLogProbabilityOfTree(t);
+        mregAll /= test.size();
+        System.out.printf("  MRegCCD class at mu=%.5f: held-out logP/tree = %.3f  (driver reserve %.3f; delta %.4f)%n",
+                bestRMu, mregAll, bestR, mregAll - bestR);
         System.out.printf("  at best mu: %d fallback clades (M2=M3=0); region tops on held-out: %d total, "
                 + "%d hit a fallback clade (%.1f%%)%n",
                 bestFbClades, bestTops, bestFbHits, 100.0 * bestFbHits / Math.max(1, bestTops));

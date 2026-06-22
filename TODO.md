@@ -56,11 +56,15 @@ Currently lives as static methods in `src/ccd/experiments/regularisation/GRegCCD
 
 ## Next steps (ranked)
 
-1. **Close the 2.5-nat gap**: add deeper reserve orders (M4+) and a geometric tail correction
-   to `epsFor`, mirroring KRegCCD's reserve. Check how often eps falls back (M2=M3=0):
-   `fallbackClades` is tracked but not printed -- print it.
-2. **Promote to a model class** `MRegCCD` (or similar) implementing the distribution interface,
-   so the conditional-reserve model sits alongside CCD1/regCCD/KRegCCD (currently driver-only).
+1. ~~**Close the 2.5-nat gap**~~ **DONE** (see UPDATE above): generalised reserve + reservability
+   gate -> gap 2.29 -> 1.75 nat; deeper orders are for normalisation, not score; residual is the
+   m=2 recombination pricing, not depth. `fallbackClades` printed (= 0 on RSV2).
+2. ~~**Promote to a model class** `MRegCCD`~~ **DONE**: `src/ccd/model/MRegCCD.java` extends `CCD1`
+   (raw-CCP backbone) with the per-clade reserve (`countsFor`/`epsFor`/`tailFor`, op-capped). Tests
+   in `MRegCCDTest`: exact normalisation at full depth (sum=1 to 1e-9 on 5/6 taxa); order-2 without a
+   tail super-normalises (sum=2.42); and **M_2 == CCD0-expanded splits** cross-checked against the
+   real `CCD0` (49 clades). Driver `GRegCCDRSV2` cross-checks the class reproduces its score (within
+   op-cap noise). Escape SAMPLING still TODO (needed for step 5 / PIT).
 3. **Fair fit**: fit mu by leave-k-out CV (not the test-held-out grid) for an apples-to-apples
    comparison with KRegCCD's CV-fitted mu.
 4. **Try alpha smoothing** on the observed CCPs (optional 2nd knob) to see if it helps the novel
