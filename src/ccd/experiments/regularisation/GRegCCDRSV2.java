@@ -3,6 +3,7 @@ package ccd.experiments.regularisation;
 import beast.base.evolution.tree.Node;
 import beast.base.evolution.tree.Tree;
 import ccd.algorithms.LoadOrStoreTrees;
+import ccd.model.CCD1;
 import ccd.model.GRegZApprox;
 import ccd.model.KRegCCD;
 import ccd.model.bitsets.BitSet;
@@ -50,18 +51,38 @@ public class GRegCCDRSV2 {
         System.out.printf("observed clades=%d, observed splits=%d%n",
                 obs.size(), obs.values().stream().mapToInt(Map::size).sum());
 
-        // KRegCCD: comparison model (both are full support)
+        // comparison models (KRegCCD full support; CCD1 zero on novel trees)
         KRegCCD kreg = KRegCCD.withOptimisedParameters(train);
+        CCD1 ccd1 = new CCD1(train, 0.0);
         double kregMeanLogP = 0;
         for (Tree t : test) kregMeanLogP += kreg.getLogProbabilityOfTree(t);
         kregMeanLogP /= test.size();
 
-        // pre-compute per-test-tree (novel, sumLogCount)
+        // pre-compute per-test-tree (novel, sumLogCount); split common (novel=0) vs novel-containing
         double[] testNovel = new double[test.size()], testSLC = new double[test.size()];
-        for (int i = 0; i < test.size(); i++) { double[] s = stats(test.get(i)); testNovel[i] = s[0]; testSLC[i] = s[1]; }
+        List<Integer> common = new ArrayList<>(), withNovel = new ArrayList<>();
+        for (int i = 0; i < test.size(); i++) {
+            double[] s = stats(test.get(i)); testNovel[i] = s[0]; testSLC[i] = s[1];
+            (s[0] == 0 ? common : withNovel).add(i);
+        }
 
         // GRegCCD partition function via the tractable observed-DAG approximation
         GRegZApprox z = GRegZApprox.fromTrees(train);
+
+        // CONSISTENCY CHECK on the observed-support (common) held-out trees, where there is no escape:
+        // GReg logP = sumLogCount - logZ (eps-independent). Compare to CCD1 and KRegCCD on the SAME trees.
+        double logZobs = z.logZ(1e-6);
+        double gregCommon = 0, ccd1Common = 0, kregCommon = 0;
+        for (int i : common) {
+            gregCommon += testSLC[i] - logZobs;
+            ccd1Common += ccd1.getLogProbabilityOfTree(test.get(i));
+            kregCommon += kreg.getLogProbabilityOfTree(test.get(i));
+        }
+        int nc = common.size();
+        System.out.printf("%n-- observed-support held-out trees: %d of %d --%n", nc, test.size());
+        System.out.printf("GReg(eps->0) logP/tree = %.3f   CCD1 = %.3f   KReg = %.3f   (logZ_obs=%.3f)%n",
+                gregCommon / nc, ccd1Common / nc, kregCommon / nc, logZobs);
+        System.out.printf("-- novel-containing held-out trees: %d (CCD1 scores 0 = -inf here) --%n", withNovel.size());
 
         System.out.printf("%n%-9s %14s %12s %14s%n", "eps", "GReg logP/tree", "logZ", "(KReg logP/tree)");
         double bestEps = 0, bestLogP = Double.NEGATIVE_INFINITY;
