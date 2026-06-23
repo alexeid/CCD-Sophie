@@ -86,6 +86,9 @@ public class CCD1CPTest {
 
     @Test
     public void treeSetTest() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                new java.io.File("/Users/zyan598/Documents/GitHub/CCD_sampled_ancestor/example_trees/4taxa_alexei.trees").exists(),
+                "skipped: SA example tree file not present on this machine");
         TreeAnnotator.MemoryFriendlyTreeSet treeSet = sampleTreeSet();
         // CCD1 ccd = new CCD1CP(treeSet, false);
         // WrappedBeastTree mapTreeCCD1 = new WrappedBeastTree(ccd.getMAPTree());

@@ -76,14 +76,14 @@ public class KRegCCDParameterOptimiserTest {
         assertTrue(Double.isFinite(p.heldOutLogProb()), "held-out logP must be finite");
 
         double atOptimum = KRegCCDParameterOptimiser.crossValidatedLogProb(
-                trees, 4, FoldAssignment.STRIDED, p.alpha(), p.mu());
+                trees, 4, FoldAssignment.CONTIGUOUS, p.alpha(), p.mu());
         assertEquals(p.heldOutLogProb(), atOptimum, 1e-6, "reported objective must be reproducible");
 
         // compare against the two ends of the searched (valid) mu range
         double atTinyMu = KRegCCDParameterOptimiser.crossValidatedLogProb(
-                trees, 4, FoldAssignment.STRIDED, p.alpha(), 1e-3);
+                trees, 4, FoldAssignment.CONTIGUOUS, p.alpha(), 1e-3);
         double atCeilingMu = KRegCCDParameterOptimiser.crossValidatedLogProb(
-                trees, 4, FoldAssignment.STRIDED, p.alpha(), KRegCCD.MU_RELIABLE_MAX);
+                trees, 4, FoldAssignment.CONTIGUOUS, p.alpha(), KRegCCD.MU_RELIABLE_MAX);
         assertTrue(atOptimum >= atTinyMu - 1e-9,
                 "mu* should be at least as good as a near-zero mu (" + atOptimum + " vs " + atTinyMu + ")");
         assertTrue(atOptimum >= atCeilingMu - 1e-9,
