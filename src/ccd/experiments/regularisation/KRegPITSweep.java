@@ -62,8 +62,9 @@ public class KRegPITSweep {
     private record Cell(List<Double> v, int zeroed, int scored) {
     }
 
-    /** All cells for one replicate, indexed {@code [modelIndex][sizeIndex]}, plus the KRegCCD fits. */
-    private record RepOut(int rep, Cell[][] cells, double[] kregAlpha, double[] kregMu) {
+    /** All cells for one replicate, indexed {@code [modelIndex][sizeIndex]}, plus the fitted params
+     *  of the models that have them: KRegCCD {@code (alpha, mu)} and MRegCCD {@code mu}. */
+    private record RepOut(int rep, Cell[][] cells, double[] kregAlpha, double[] kregMu, double[] mregMu) {
     }
 
     public static void main(String[] args) throws IOException {
@@ -128,17 +129,21 @@ public class KRegPITSweep {
         try (PrintWriter w = new PrintWriter(new File(out));
              PrintWriter pw = new PrintWriter(new File(paramsOut))) {
             KRegPITExperiment.writeTidyHeader(w);
-            pw.println("rep\tsampleSize\talpha\tmu"); // one row per KRegCCD fit (the only model with fitted params)
-
-            // KRegCCD fits, in (size, rep) order to match the previous serial output layout.
-            int kregIdx = indexOf(models, "kreg");
-            if (kregIdx >= 0) {
-                for (int si = 0; si < sizes.length; si++) {
-                    for (RepOut ro : repOuts) {
-                        if (!Double.isNaN(ro.kregAlpha()[si])) {
-                            pw.printf(Locale.US, "%d\t%d\t%.6f\t%.6f%n",
-                                    ro.rep(), sizes[si], ro.kregAlpha()[si], ro.kregMu()[si]);
-                        }
+            // long format: one row per fitted model (kreg has alpha+mu, mreg has mu; alpha = NaN).
+            pw.println("model\tsampleSize\trep\talpha\tmu");
+            for (int si = 0; si < sizes.length; si++) { // (size, rep) order within each model block
+                for (RepOut ro : repOuts) {
+                    if (!Double.isNaN(ro.kregMu()[si])) {
+                        pw.printf(Locale.US, "kreg\t%d\t%d\t%.6f\t%.6f%n",
+                                sizes[si], ro.rep(), ro.kregAlpha()[si], ro.kregMu()[si]);
+                    }
+                }
+            }
+            for (int si = 0; si < sizes.length; si++) {
+                for (RepOut ro : repOuts) {
+                    if (!Double.isNaN(ro.mregMu()[si])) {
+                        pw.printf(Locale.US, "mreg\t%d\t%d\tNaN\t%.6f%n",
+                                sizes[si], ro.rep(), ro.mregMu()[si]);
                     }
                 }
             }
@@ -172,8 +177,10 @@ public class KRegPITSweep {
             Cell[][] cells = new Cell[models.length][sizes.length];
             double[] kregAlpha = new double[sizes.length];
             double[] kregMu = new double[sizes.length];
+            double[] mregMu = new double[sizes.length];
             Arrays.fill(kregAlpha, Double.NaN);
             Arrays.fill(kregMu, Double.NaN);
+            Arrays.fill(mregMu, Double.NaN);
 
             File trainDir = new File(dataRoot + "/rep" + rep + "/run1");
             File testDir = new File(dataRoot + "/rep" + rep + "/run2");
@@ -182,7 +189,7 @@ public class KRegPITSweep {
             if (train == null || test == null) {
                 System.err.printf(Locale.US, "skip rep %d: no %s*.trees in %s%n", rep, prefix,
                         train == null ? trainDir : testDir);
-                return new RepOut(rep, cells, kregAlpha, kregMu);
+                return new RepOut(rep, cells, kregAlpha, kregMu, mregMu);
             }
 
             for (int si = 0; si < sizes.length; si++) {
@@ -195,9 +202,11 @@ public class KRegPITSweep {
                     // Own, deterministically-seeded RNG per cell (see class doc): makes fitting and the
                     // single-threaded sample reproducible; parallel sampling still varies at MC-noise level.
                     ((AbstractCCD) m).setRandom(new Random(mix(seed, rep, si, mi, 1)));
-                    if (m instanceof KRegCCD kreg) { // only KRegCCD has fitted (alpha, mu)
+                    if (m instanceof KRegCCD kreg) { // KRegCCD has fitted (alpha, mu)
                         kregAlpha[si] = kreg.getAlpha();
                         kregMu[si] = kreg.getMu();
+                    } else if (m instanceof ccd.model.MRegCCD mreg) { // MRegCCD has fitted mu
+                        mregMu[si] = mreg.getMu();
                     }
                     double[] sortedLogP = KRegPITExperiment.sortedSampleLogProbs(m, numSamples);
                     List<Double> uOut = new ArrayList<>();
@@ -209,7 +218,7 @@ public class KRegPITSweep {
             }
             System.out.printf(Locale.US, "rep %d done (%d/%d, %.0fs)%n",
                     rep, done.incrementAndGet(), numReps, (System.currentTimeMillis() - t0) / 1000.0);
-            return new RepOut(rep, cells, kregAlpha, kregMu);
+            return new RepOut(rep, cells, kregAlpha, kregMu, mregMu);
         };
     }
 

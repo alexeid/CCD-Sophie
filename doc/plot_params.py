@@ -81,22 +81,66 @@ def plot_violin(ax, rows, sizes, muceil, mufloor, alpha):
     ax.grid(True, axis="y", ls=":", lw=0.4, alpha=0.5)
 
 
+def plot_violin_by_model(ax, rows, sizes, models, muceil, mufloor):
+    """mu violins per sample size, grouped side-by-side by model (long-format TSV with a model column)."""
+    rng = np.random.RandomState(0)
+    nm = len(models)
+    width = 0.8 / nm
+    centres = np.arange(1, len(sizes) + 1)
+    for mi, model in enumerate(models):
+        col = COLORS[mi % len(COLORS)]
+        offset = (mi - (nm - 1) / 2.0) * width
+        logmu, positions = [], []
+        for si, s in enumerate(sizes):
+            vals = rows[(rows["sampleSize"] == s) & (rows["model"] == model)]["mu"]
+            vals = vals[np.isfinite(vals) & (vals > 0)]
+            logmu.append(np.log10(vals))
+            positions.append(centres[si] + offset)
+        parts = ax.violinplot(logmu, positions=positions, widths=width * 0.9, showextrema=False)
+        for body in parts["bodies"]:
+            body.set_facecolor(col); body.set_alpha(0.25); body.set_edgecolor(col)
+        for pos, vals in zip(positions, logmu):
+            x = pos + rng.uniform(-0.4, 0.4, size=len(vals)) * width
+            ax.scatter(x, vals, s=10, alpha=0.5, color=col, edgecolor="white", linewidth=0.25, zorder=3)
+            med = np.median(vals)
+            ax.hlines(med, pos - width * 0.45, pos + width * 0.45, color="black", lw=1.4, zorder=4)
+        ax.scatter([], [], s=40, color=col, label=f"{model}  (med $\\mu$ "
+                   + ", ".join(f"{10 ** np.median(np.log10(rows[(rows['sampleSize'] == s) & (rows['model'] == model)]['mu'])):.2g}" for s in sizes) + ")")
+
+    ax.axhline(np.log10(muceil), ls="--", lw=0.9, color="0.4", zorder=1, label=f"$\\mu$ ceiling = {muceil:g}")
+    ax.axhline(np.log10(mufloor), ls=":", lw=0.9, color="0.4", zorder=1, label=f"$\\mu$ floor = {mufloor:g}")
+    allmu = rows["mu"][np.isfinite(rows["mu"]) & (rows["mu"] > 0)]
+    lo = int(np.floor(min(np.log10(mufloor), np.log10(allmu.min()))))
+    hi = int(np.ceil(max(np.log10(muceil), np.log10(allmu.max()))))
+    ax.set_yticks(range(lo, hi + 1))
+    ax.set_yticklabels([f"$10^{{{k}}}$" for k in range(lo, hi + 1)])
+    ax.set_xticks(centres)
+    ax.set_xticklabels([f"n = {int(s)}" for s in sizes])
+    ax.set_ylabel(r"$\mu$  (escape probability)")
+    ax.set_xlabel("training sample size")
+    ax.legend(fontsize=8, framealpha=0.9, loc="best")
+    ax.grid(True, axis="y", ls=":", lw=0.4, alpha=0.5)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     title = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--title=")),
-                 "Fitted KRegCCD parameters")
+                 "Fitted regularised-CCD parameters")
     muceil = float(next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--muceil=")), 0.05))
     mufloor = float(next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--mufloor=")), 1e-4))
     if len(args) < 2:
         sys.exit('usage: plot_params.py <out.pdf> <params.tsv> [--title="..."] [--muceil=0.05] [--mufloor=1e-4]')
     out, path = args[0], args[1]
 
-    rows = np.atleast_1d(np.genfromtxt(path, delimiter="\t", names=True))
+    rows = np.atleast_1d(np.genfromtxt(path, delimiter="\t", names=True, dtype=None, encoding="utf-8"))
     sizes = sorted(np.unique(rows["sampleSize"]))
 
-    fig, ax = plt.subplots(figsize=(6.4, 5.2))
-    alpha_varies = np.ptp(rows["alpha"]) > 1e-9
-    if alpha_varies:
+    fig, ax = plt.subplots(figsize=(7.2, 5.2))
+    if "model" in rows.dtype.names:
+        models = list(dict.fromkeys(rows["model"]))  # preserve first-seen order
+        plot_violin_by_model(ax, rows, sizes, models, muceil, mufloor)
+        mode = f"mu violins by model ({', '.join(models)})"
+    elif np.ptp(rows["alpha"]) > 1e-9:
         plot_scatter(ax, rows, sizes, muceil, mufloor)
         mode = "(alpha, mu) scatter"
     else:
