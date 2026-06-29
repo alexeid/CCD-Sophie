@@ -93,6 +93,31 @@ public class KRegCCD extends RegCCD {
      */
     private static final int EXP_REDUCTION = 2;
 
+    /**
+     * Lazily-built leaf TAXON-NAME &rarr; canonical clade index, so {@link #getLogProbabilityOfTree} scores a tree
+     * by its taxon LABELS rather than the caller's {@code node.getNr()}. Without this, a tree whose leaf numbering
+     * differs from this CCD's training trees (e.g. built from a different alignment or parsed from a different file)
+     * silently mismatches EVERY clade — the historic "numbering trap". Matching by name removes it: a tree with the
+     * right labels scores correctly regardless of its internal numbering, and an already-canonical tree is
+     * unaffected (its name maps back to the same index).
+     */
+    private Map<String, Integer> nameToCanonical;
+
+    /** Canonical clade index of a leaf: by taxon NAME when labelled (numbering-robust), else its {@code getNr()}. */
+    private int leafBit(Node leaf) {
+        String id = leaf.getID();
+        if (id == null) return leaf.getNr();   // unlabelled leaf: trust the caller's numbering (legacy callers)
+        if (nameToCanonical == null) {
+            nameToCanonical = new HashMap<>();
+            String[] names = getSomeBaseTree().getTaxaNames();
+            for (int i = 0; i < names.length; i++) if (names[i] != null) nameToCanonical.put(names[i], i);
+        }
+        Integer idx = nameToCanonical.get(id);
+        if (idx == null) throw new IllegalArgumentException(
+                "taxon '" + id + "' is not in this CCD's taxon set — scoring a tree from a different alignment?");
+        return idx;
+    }
+
     /** Per-clade escape probability (reserved mass for unseen resolutions). */
     private final double mu;
 
@@ -442,7 +467,7 @@ public class KRegCCD extends RegCCD {
             b.clear();
         }
         if (v.isLeaf()) {
-            b.set(v.getNr());
+            b.set(leafBit(v));
         } else {
             b.or(computeBitsReusing(v.getChildren().get(0), bits));
             b.or(computeBitsReusing(v.getChildren().get(1), bits));
@@ -1132,7 +1157,7 @@ public class KRegCCD extends RegCCD {
     private BitSet computeBits(Node v, Map<Node, BitSet> bits) {
         BitSet b = BitSet.newBitSet(leafArraySize);
         if (v.isLeaf()) {
-            b.set(v.getNr());
+            b.set(leafBit(v));
         } else {
             b.or(computeBits(v.getChildren().get(0), bits));
             b.or(computeBits(v.getChildren().get(1), bits));
